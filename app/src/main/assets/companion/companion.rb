@@ -635,6 +635,9 @@ module RD
         species_sample: first ? (try { call_if(first, :species).inspect }) : nil,
         input: { C: input_const(:C, :USE).inspect, B: input_const(:B, :BACK).inspect },
         get_mon_name: respond_to?(:getMonName, true),
+        data_dir: (try { System.data_directory } if defined?(System)),
+        data_files: (try { Dir.entries(System.data_directory).reject { |f| f.start_with?(".") }.first(20) } if defined?(System)),
+        game_saves: try { Dir.glob("*.rxdata").first(20) },
         log: @log_lines.last(30)
       }
     end

@@ -109,11 +109,62 @@ public class MainActivity extends SDLActivity
         System.exit(0);
     }
 
+    /**
+     * Earlier builds kept save data in private app storage. Copy anything
+     * there into <game folder>/rejuv-dual/saves/ (never overwriting) so it
+     * is visible, can be backed up, and survives an uninstall.
+     */
+    private void migrateOldSaves()
+    {
+        if (!hasStorageAccess())
+            return;
+        File src = getFilesDir();
+        File dst = new File(GAME_PATH, "rejuv-dual/saves");
+        if (!dst.isDirectory() && !dst.mkdirs()) {
+            Log.w(TAG, "Couldn't create " + dst);
+            return;
+        }
+        int copied = copyTree(src, dst);
+        if (copied > 0)
+            Log.i(TAG, "Moved " + copied + " old save file(s) to " + dst);
+        Log.i(TAG, "Save folder: " + dst);
+    }
+
+    private static int copyTree(File src, File dst)
+    {
+        int n = 0;
+        File[] kids = src.listFiles();
+        if (kids == null)
+            return 0;
+        for (File f : kids) {
+            if (f.getName().equals("companion"))
+                continue;
+            File out = new File(dst, f.getName());
+            if (f.isDirectory()) {
+                if (out.isDirectory() || out.mkdirs())
+                    n += copyTree(f, out);
+            } else if (!out.exists()) {
+                try (InputStream in = new java.io.FileInputStream(f);
+                     OutputStream os = new FileOutputStream(out)) {
+                    byte[] buf = new byte[16384];
+                    int r;
+                    while ((r = in.read(buf)) > 0)
+                        os.write(buf, 0, r);
+                    n++;
+                } catch (Exception e) {
+                    Log.w(TAG, "Couldn't copy " + f + ": " + e);
+                }
+            }
+        }
+        return n;
+    }
+
     private void runSDLThread()
     {
         if (!mStarted) {
             setupLogFile();
             logStartupReport();
+            migrateOldSaves();
         }
 
         mStarted = true;
