@@ -16,13 +16,27 @@ android {
         ndk.debugSymbolLevel = 'FULL'
     }
 
+    // A fixed, public "debug" key committed to the repo so every CI build is
+    // signed the same way and installs as an update over the previous one.
+    // It protects nothing; it only keeps signatures consistent.
+    signingConfigs {
+        shared {
+            storeFile file('rejuv-debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig signingConfigs.shared
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
 
         debug {
+            signingConfig signingConfigs.shared
             debuggable true
             jniDebuggable true
         }

@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Rejuv Dual</title>
+<style>
+  :root {
+    --bg: #101318;
+    --panel: #1a1f27;
+    --panel-2: #222935;
+    --line: #2e3644;
+    --text: #e8ecf2;
+    --muted: #8c97a8;
+    --accent: #f2c14e;
+    --hp-good: #4cc26a;
+    --hp-mid: #e8b33a;
+    --hp-low: #e0523f;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  body { display: flex; flex-direction: column; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--line); min-height: 44px; }
+  header .map { font-weight: 650; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header .meta { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex: none; }
+  header .dot.live { background: var(--hp-good); }
+
+  nav { display: flex; background: var(--panel); border-bottom: 1px solid var(--line); }
+  nav button { flex: 1; padding: 9px 0; background: none; border: 0; color: var(--muted);
+    font: inherit; font-weight: 600; border-bottom: 3px solid transparent; }
+  nav button.on { color: var(--text); border-bottom-color: var(--accent); }
+
+  main { flex: 1; overflow-y: auto; padding: 10px; }
+  section { display: none; }
+  section.on { display: block; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; }
+  .card.fainted { opacity: .5; }
+  .row { display: flex; align-items: center; gap: 6px; }
+  .name { font-weight: 650; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lv { color: var(--muted); font-size: 13px; }
+  .tag { font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 6px; background: var(--panel-2); color: var(--text); }
+  .tag.status { background: #6b3fa0; }
+  .tag.new { background: var(--accent); color: #1b1b1b; }
+  .tag.owned { background: #2d5b3a; }
+  .types { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+  .type { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; color: #fff; text-shadow: 0 1px 1px #0006; }
+  .hp { height: 8px; background: #0b0d10; border-radius: 4px; overflow: hidden; margin-top: 7px; }
+  .hp > div { height: 100%; border-radius: 4px; transition: width .25s ease; }
+  .hpnum { font-size: 12px; color: var(--muted); margin-top: 3px; text-align: right; font-variant-numeric: tabular-nums; }
+  .moves { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .moves .mv { font-size: 12px; background: var(--panel-2); border-radius: 6px; padding: 4px 6px;
+    border-left: 4px solid #777; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .foes { display: grid; gap: 8px; margin-bottom: 10px; }
+  .foe { border-color: #3b4558; }
+  .foe .name { font-size: 17px; }
+  .wildbadge { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 4px; }
+
+  .pad { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .btn { border: 0; border-radius: var(--radius); padding: 16px 10px; font: inherit; font-weight: 700;
+    color: #fff; background: var(--panel-2); min-height: 64px; text-align: left; position: relative;
+    box-shadow: inset 0 -3px 0 #0005; text-shadow: 0 1px 2px #0009; }
+  .btn:active { transform: translateY(1px); filter: brightness(1.15); }
+  .btn .sub { display: block; font-size: 12px; font-weight: 600; opacity: .85; margin-top: 4px; }
+  .btn .eff { position: absolute; top: 8px; right: 10px; font-size: 11px; font-weight: 800;
+    padding: 2px 6px; border-radius: 6px; background: #0006; }
+  .btn.cmd { font-size: 20px; text-align: center; min-height: 84px; }
+  .btn.fight { background: #c0392b; } .btn.bag { background: #d68910; }
+  .btn.party { background: #239b56; } .btn.run { background: #2e86c1; }
+  .btn.back { grid-column: 1 / -1; min-height: 46px; text-align: center; background: #39414f; }
+  .btn.disabled { opacity: .45; }
+  .waiting { text-align: center; color: var(--muted); padding: 14px 0 10px; }
+  .keys { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .keys .btn { text-align: center; min-height: 56px; }
+
+  .empty { color: var(--muted); text-align: center; padding: 30px 10px; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 11px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; margin: 8px 0; user-select: text; }
+  .small { font-size: 12px; color: var(--muted); }
+  .toolbar { display: flex; gap: 8px; }
+  .toolbar .btn { min-height: 40px; padding: 8px 12px; text-align: center; flex: 1; }
+
+  body.panel header { padding-right: 56px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <span class="map" id="map">Waiting for game…</span>
+  <span class="meta" id="meta"></span>
+</header>
+<nav>
+  <button data-tab="party" class="on">Party</button>
+  <button data-tab="battle">Battle</button>
+  <button data-tab="info">Info</button>
+</nav>
+<main>
+  <section id="tab-party" class="on"><div class="grid" id="party"></div></section>
+  <section id="tab-battle">
+    <div id="foes" class="foes"></div>
+    <div id="controls"></div>
+  </section>
+  <section id="tab-info">
+    <div class="toolbar">
+      <button class="btn" id="reprobe">Re-run probe</button>
+      <button class="btn" id="refresh">Resend state</button>
+    </div>
+    <p class="small">The probe shows which game hooks were found. If something on the Party or Battle tabs is missing, screenshot this page.</p>
+    <pre id="probe">No probe yet.</pre>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var TYPE_COLORS = {
+    normal: "#9a9a7a", fire: "#e2662a", water: "#4a7fe0", grass: "#5aa83c", electric: "#e0b521",
+    ice: "#6ccfd0", fighting: "#b0312a", poison: "#9442a0", ground: "#c9a64e", flying: "#8f7fe0",
+    psychic: "#e5507a", bug: "#98a821", rock: "#a8913a", ghost: "#6a5592", dragon: "#6337e8",
+    dark: "#6a5446", steel: "#9a9ab8", fairy: "#e08ab0", "???": "#5f8f88", qmarks: "#5f8f88"
+  };
+
+  var native = window.RDNative || {
+    send: function (s) { console.log("send", s); },
+    ready: function () {}, mode: function () { return "screen"; }, haptic: function () {}
+  };
+  var mode = (native.mode && native.mode()) || "screen";
+  if (mode === "panel") document.body.classList.add("panel");
+
+  var state = null, menu = null, activeMon = null, battleLive = false, lastMsg = 0;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function typeColor(t) { return TYPE_COLORS[String(t || "").toLowerCase()] || "#666"; }
+  function typeChips(types) {
+    return (types || []).map(function (t) {
+      return '<span class="type" style="background:' + typeColor(t) + '">' + esc(t) + "</span>";
+    }).join("");
+  }
+  function hpBar(hp, max) {
+    if (hp == null || !max) return "";
+    var pct = Math.max(0, Math.min(100, (hp / max) * 100));
+    var color = pct > 50 ? "var(--hp-good)" : pct > 20 ? "var(--hp-mid)" : "var(--hp-low)";
+    return '<div class="hp"><div style="width:' + pct + "%;background:" + color + '"></div></div>' +
+      '<div class="hpnum">' + hp + " / " + max + "</div>";
+  }
+  function send(obj) {
+    try { native.haptic && native.haptic(12); } catch (e) {}
+    native.send(JSON.stringify(obj));
+  }
+
+  // ── Tabs ───────────────────────────────────────────────────────────────
+  var tabs = document.querySelectorAll("nav button");
+  function showTab(name) {
+    tabs.forEach(function (b) { b.classList.toggle("on", b.dataset.tab === name); });
+    document.querySelectorAll("section").forEach(function (s) { s.classList.toggle("on", s.id === "tab-" + name); });
+  }
+  tabs.forEach(function (b) { b.addEventListener("click", function () { showTab(b.dataset.tab); }); });
+
+  // ── Header / party ─────────────────────────────────────────────────────
+  function renderHeader() {
+    $("dot").classList.toggle("live", Date.now() - lastMsg < 5000);
+    if (!state) return;
+    $("map").textContent = (state.map && state.map.name) || "—";
+    var t = state.trainer || {};
+    var bits = [];
+    if (t.money != null) bits.push("$" + Number(t.money).toLocaleString());
+    if (t.badges != null) bits.push(t.badges + " badges");
+    $("meta").textContent = bits.join(" · ");
+  }
+
+  function monCard(m) {
+    var tags = "";
+    if (m.status) tags += '<span class="tag status">' + esc(m.status) + "</span>";
+    if (m.shiny) tags += '<span class="tag">★</span>';
+    var moves = (m.moves || []).map(function (mv) {
+      return '<div class="mv" style="border-left-color:' + typeColor(mv.type) + '">' + esc(mv.name) +
+        (mv.pp != null ? ' <span class="small">' + mv.pp + "/" + mv.maxpp + "</span>" : "") + "</div>";
+    }).join("");
+    var fainted = !m.egg && m.hp === 0;
+    return '<div class="card' + (fainted ? " fainted" : "") + '">' +
+      '<div class="row"><span class="name">' + esc(m.name) + '</span>' + tags +
+      (m.level != null && !m.egg ? '<span class="lv">Lv ' + m.level + "</span>" : "") + "</div>" +
+      (m.egg ? "" : '<div class="types">' + typeChips(m.types) + "</div>" + hpBar(m.hp, m.maxhp)) +
+      (moves ? '<div class="moves">' + moves + "</div>" : "") + "</div>";
+  }
+
+  function renderParty() {
+    var party = (state && state.party) || [];
+    $("party").innerHTML = party.length ? party.map(monCard).join("") :
+      '<div class="empty">No party yet. Load a save and it will show up here.</div>';
+  }
+
+  // ── Battle ─────────────────────────────────────────────────────────────
+  function effLabel(e) {
+    if (e == null) return "";
+    if (e === 0) return "No effect";
+    if (e >= 4) return "4×";
+    if (e >= 2) return "2×";
+    if (e <= 0.25) return "¼×";
+    if (e < 1) return "½×";
+    return "";
+  }
+
+  function renderFoes() {
+    var b = state && state.battle;
+    if (!b || !b.foes || !b.foes.length) { $("foes").innerHTML = ""; return; }
+    $("foes").innerHTML = b.foes.map(function (f) {
+      var tags = "";
+      if (b.wild) tags += f.owned ? '<span class="tag owned">Caught</span>' : f.owned === false ? '<span class="tag new">New</span>' : "";
+      if (f.shiny) tags += '<span class="tag">★</span>';
+      if (f.status) tags += '<span class="tag status">' + esc(f.status) + "</span>";
+      return '<div class="card foe' + (f.fainted ? " fainted" : "") + '">' +
+        '<div class="wildbadge">' + (b.wild ? "Wild" : "Opponent") + "</div>" +
+        '<div class="row"><span class="name">' + esc(f.name) + "</span>" + tags +
+        '<span class="lv">Lv ' + esc(f.level) + "</span></div>" +
+        '<div class="types">' + typeChips(f.types) + "</div>" + hpBar(f.hp, f.maxhp) + "</div>";
+    }).join("");
+  }
+
+  var CMD_CLASS = ["fight", "bag", "party", "run"];
+
+  function renderControls() {
+    var html = "";
+    if (menu && menu.kind === "command") {
+      html += '<div class="pad">' + menu.options.map(function (o) {
+        return '<button class="btn cmd ' + (CMD_CLASS[o.index] || "") + '" data-pick="command" data-index="' +
+          o.index + '">' + esc(o.label) + "</button>";
+      }).join("") + "</div>";
+    } else if (menu && menu.kind === "fight") {
+      html += '<div class="pad">' + menu.options.map(function (o) {
+        var empty = o.pp === 0;
+        var sub = [];
+        if (o.pp != null) sub.push("PP " + o.pp + "/" + o.maxpp);
+        if (o.power) sub.push("Pow " + o.power);
+        if (o.cat) sub.push(o.cat);
+        var eff = effLabel(o.eff);
+        return '<button class="btn' + (empty ? " disabled" : "") + '" style="background:' + typeColor(o.type) +
+          '" data-pick="fight" data-index="' + o.index + '">' + esc(o.name) +
+          '<span class="sub">' + esc(o.type || "") + (sub.length ? " · " + esc(sub.join(" · ")) : "") + "</span>" +
+          (eff ? '<span class="eff">' + eff + "</span>" : "") + "</button>";
+      }).join("") + '<button class="btn back" data-key="B">Back</button></div>';
+    } else {
+      html += '<div class="waiting">' + (battleLive ? "Waiting for the game…" : "Not in battle") + "</div>" +
+        '<div class="keys"><button class="btn" data-key="C">A · Next</button>' +
+        '<button class="btn" data-key="B">B · Back</button></div>';
+    }
+    $("controls").innerHTML = html;
+  }
+
+  $("controls").addEventListener("click", function (e) {
+    var el = e.target.closest("button");
+    if (!el || el.classList.contains("disabled")) return;
+    if (el.dataset.pick) send({ t: "pick", menu: el.dataset.pick, index: Number(el.dataset.index) });
+    else if (el.dataset.key) send({ t: "key", key: el.dataset.key });
+  });
+
+  $("reprobe").addEventListener("click", function () { send({ t: "probe" }); });
+  $("refresh").addEventListener("click", function () { send({ t: "refresh" }); });
+
+  // ── Incoming messages from the game ───────────────────────────────────
+  function recv(msg) {
+    if (!msg || typeof msg !== "object") return;
+    lastMsg = Date.now();
+    switch (msg.t) {
+      case "state":
+        state = msg;
+        var inBattle = !!(msg.battle && msg.battle.foes && msg.battle.foes.length);
+        if (inBattle && !battleLive) { battleLive = true; showTab("battle"); }
+        renderHeader(); renderParty(); renderFoes(); renderControls();
+        break;
+      case "battle":
+        if (msg.phase === "start") {
+          battleLive = true;
+          if (msg.battle) { state = state || {}; state.battle = msg.battle; renderFoes(); }
+          showTab("battle");
+        } else {
+          battleLive = false; menu = null;
+          if (state) state.battle = null;
+          renderFoes();
+          showTab("party");
+        }
+        renderControls();
+        break;
+      case "menu":
+        menu = msg.menu || null;
+        activeMon = msg.active || null;
+        if (menu) showTab("battle");
+        renderControls();
+        break;
+      case "probe":
+        $("probe").textContent = JSON.stringify(msg, null, 2);
+        break;
+    }
+  }
+
+  window.rd = { recv: recv };
+  setInterval(renderHeader, 2000);
+  renderParty(); renderControls();
+  try { native.ready(); } catch (e) {}
+})();
+</script>
+</body>
+</html>

@@ -99,6 +99,7 @@ void fileIntBindingInit();
 
 #ifdef MKXPZ_BUILD_ANDROID
 void androidBindingInit();
+std::string androidCompanionScriptPath();
 #endif
 
 #ifdef MKXPZ_MINIFFI
@@ -970,6 +971,15 @@ static void runRMXPScripts(BacktraceData &btData) {
     for (std::vector<std::string>::const_iterator i = conf.preloadScripts.begin();
          i != conf.preloadScripts.end(); ++i)
         runCustomScript(*i);
+
+#ifdef MKXPZ_BUILD_ANDROID
+    /* rejuv-dual: run the bundled companion mod after any game preloads */
+    {
+        std::string companionPath = androidCompanionScriptPath();
+        if (!companionPath.empty())
+            runCustomScript(companionPath);
+    }
+#endif
     
     VALUE exc = rb_gv_get("$!");
     if (exc != Qnil)

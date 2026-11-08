@@ -2,6 +2,8 @@
 
 #include <SDL.h>
 #include <jni.h>
+#include <android/log.h>
+#include <string>
 
 RB_METHOD(androidDeviceInfo)
 {
@@ -152,6 +154,129 @@ RB_METHOD(androidInMultiWindow)
 	return rb_bool_new(winMode);
 }
 
+/* ── rejuv-dual: Companion bridge ───────────────────────────────────────────
+ * Ruby <-> Java bridge for the second-screen companion UI.
+ * All payloads are ASCII-only JSON strings (the Ruby side escapes non-ASCII
+ * as \uXXXX), so JNI's modified UTF-8 is never an issue.
+ */
+
+static jclass companionActivityClass(JNIEnv *env, jobject *activityOut)
+{
+	jobject activity = (jobject)SDL_AndroidGetActivity();
+	jclass cls = env->GetObjectClass(activity);
+	if (activityOut)
+		*activityOut = activity;
+	else
+		env->DeleteLocalRef(activity);
+	return cls;
+}
+
+static void companionClearException(JNIEnv *env)
+{
+	if (env->ExceptionCheck()) {
+		env->ExceptionDescribe();
+		env->ExceptionClear();
+	}
+}
+
+RB_METHOD(companionPush)
+{
+	RB_UNUSED_PARAM;
+
+	const char *payload;
+	rb_get_args(argc, argv, "z", &payload RB_ARG_END);
+
+	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+	jclass cls = companionActivityClass(env, NULL);
+
+	jmethodID mID = env->GetStaticMethodID(cls, "companionPush", "(Ljava/lang/String;)V");
+	if (mID) {
+		jstring jstr = env->NewStringUTF(payload);
+		env->CallStaticVoidMethod(cls, mID, jstr);
+		env->DeleteLocalRef(jstr);
+	}
+	companionClearException(env);
+	env->DeleteLocalRef(cls);
+
+	return Qnil;
+}
+
+RB_METHOD(companionPoll)
+{
+	RB_UNUSED_PARAM;
+
+	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+	jclass cls = companionActivityClass(env, NULL);
+	VALUE ret = Qnil;
+
+	jmethodID mID = env->GetStaticMethodID(cls, "companionPoll", "()Ljava/lang/String;");
+	if (mID) {
+		jstring jstr = (jstring)env->CallStaticObjectMethod(cls, mID);
+		if (jstr) {
+			const char *c = env->GetStringUTFChars(jstr, 0);
+			ret = rb_str_new_cstr(c);
+			env->ReleaseStringUTFChars(jstr, c);
+			env->DeleteLocalRef(jstr);
+		}
+	}
+	companionClearException(env);
+	env->DeleteLocalRef(cls);
+
+	return ret;
+}
+
+RB_METHOD(companionActive)
+{
+	RB_UNUSED_PARAM;
+
+	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+	jclass cls = companionActivityClass(env, NULL);
+	jboolean active = JNI_FALSE;
+
+	jmethodID mID = env->GetStaticMethodID(cls, "companionActive", "()Z");
+	if (mID)
+		active = env->CallStaticBooleanMethod(cls, mID);
+	companionClearException(env);
+	env->DeleteLocalRef(cls);
+
+	return rb_bool_new(active);
+}
+
+RB_METHOD(companionLog)
+{
+	RB_UNUSED_PARAM;
+
+	const char *msg;
+	rb_get_args(argc, argv, "z", &msg RB_ARG_END);
+	__android_log_print(ANDROID_LOG_INFO, "rejuv-dual[ruby]", "%s", msg);
+
+	return Qnil;
+}
+
+/* Absolute path of the bundled companion.rb (extracted by MainActivity),
+ * or an empty string if unavailable. Called before game scripts run. */
+std::string androidCompanionScriptPath()
+{
+	std::string path;
+	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+	jclass cls = companionActivityClass(env, NULL);
+
+	jmethodID mID = env->GetStaticMethodID(cls, "companionScriptPath", "()Ljava/lang/String;");
+	if (mID) {
+		jstring jstr = (jstring)env->CallStaticObjectMethod(cls, mID);
+		if (jstr) {
+			const char *c = env->GetStringUTFChars(jstr, 0);
+			path = c;
+			env->ReleaseStringUTFChars(jstr, c);
+			env->DeleteLocalRef(jstr);
+		}
+	}
+	companionClearException(env);
+	env->DeleteLocalRef(cls);
+
+	return path;
+}
+
 void androidBindingInit()
 {
 	VALUE module = rb_define_module("Android");
@@ -171,4 +296,11 @@ void androidBindingInit()
 
 	// Multi-window (Android 7.0+)
 	_rb_define_module_function(module, "in_multiwindow?", androidInMultiWindow);
+
+	// rejuv-dual companion bridge
+	VALUE companion = rb_define_module("Companion");
+	_rb_define_module_function(companion, "push", companionPush);
+	_rb_define_module_function(companion, "poll", companionPoll);
+	_rb_define_module_function(companion, "active?", companionActive);
+	_rb_define_module_function(companion, "log", companionLog);
 }

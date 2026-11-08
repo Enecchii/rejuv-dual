@@ -20,10 +20,15 @@ import android.provider.Settings;
 import android.util.Log;
 import java.util.Locale;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 
 import org.libsdl.app.SDLActivity;
 import com.hatkid.mkxpz.gamepad.Gamepad;
 import com.hatkid.mkxpz.gamepad.GamepadConfig;
+import com.hatkid.mkxpz.companion.CompanionBridge;
+import com.hatkid.mkxpz.companion.CompanionHost;
 
 public class MainActivity extends SDLActivity
 {
@@ -43,6 +48,9 @@ public class MainActivity extends SDLActivity
     // In-screen gamepad
     private final Gamepad mGamepad = new Gamepad();
     private boolean mGamepadInvisible = false;
+
+    // rejuv-dual: second-screen companion UI
+    private CompanionHost mCompanion;
 
     private void runSDLThread()
     {
@@ -141,6 +149,10 @@ public class MainActivity extends SDLActivity
 
         if (mLayout != null) {
             mGamepad.attachTo(this, mLayout);
+
+            // rejuv-dual: companion UI on the second screen (or a side panel)
+            mCompanion = new CompanionHost(this);
+            mCompanion.start(mLayout);
         }
     }
 
@@ -171,6 +183,11 @@ public class MainActivity extends SDLActivity
     @Override
     protected void onDestroy()
     {
+        if (mCompanion != null) {
+            mCompanion.stop();
+            mCompanion = null;
+        }
+
         super.onDestroy();
 
         // HACK: Exiting the JVM (process) since Ruby does not likes when we
@@ -309,5 +326,63 @@ public class MainActivity extends SDLActivity
     private static boolean inMultiWindow(Activity activity)
     {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && activity.isInMultiWindowMode();
+    }
+
+    // ── rejuv-dual companion bridge (called from android-binding.cpp) ──────
+
+    /** Game -> companion UI. Called on the SDL thread. */
+    @SuppressWarnings("unused")
+    private static void companionPush(String json)
+    {
+        CompanionBridge.fromGame(json);
+    }
+
+    /** Companion UI -> game. Returns the next queued command or null. */
+    @SuppressWarnings("unused")
+    private static String companionPoll()
+    {
+        return CompanionBridge.poll();
+    }
+
+    /** True when a companion surface is attached. */
+    @SuppressWarnings("unused")
+    private static boolean companionActive()
+    {
+        return CompanionHost.isActive();
+    }
+
+    /**
+     * Path of the companion Ruby mod to run before the game's scripts.
+     * A copy at <game folder>/rejuv-dual/companion.rb wins (handy for
+     * iterating without rebuilding the APK); otherwise the bundled asset is
+     * extracted to internal storage.
+     */
+    @SuppressWarnings("unused")
+    private static String companionScriptPath()
+    {
+        File override = new File(GAME_PATH, "rejuv-dual/companion.rb");
+        if (override.isFile()) {
+            Log.i(TAG, "Using companion override: " + override);
+            return override.getAbsolutePath();
+        }
+
+        try {
+            Context ctx = getContext();
+            File dir = new File(ctx.getFilesDir(), "companion");
+            if (!dir.isDirectory() && !dir.mkdirs())
+                throw new java.io.IOException("mkdirs failed: " + dir);
+            File out = new File(dir, "companion.rb");
+            try (InputStream in = ctx.getAssets().open("companion/companion.rb");
+                 OutputStream os = new FileOutputStream(out)) {
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = in.read(buf)) > 0)
+                    os.write(buf, 0, n);
+            }
+            return out.getAbsolutePath();
+        } catch (Exception e) {
+            Log.e(TAG, "Couldn't extract companion.rb: " + e);
+            return "";
+        }
     }
 }
