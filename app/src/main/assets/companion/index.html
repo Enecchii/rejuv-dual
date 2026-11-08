@@ -89,6 +89,17 @@
   .toolbar .btn { min-height: 40px; padding: 8px 12px; text-align: center; flex: 1; }
 
   body.panel header { padding-right: 56px; }
+  nav button { font-size: 14px; }
+  .maprow { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 10px 12px; margin-top: 6px; }
+  .maprow .phys { font-weight: 700; flex: 1; }
+  .maprow .arrow { color: var(--muted); }
+  .maprow .tgt { font-weight: 600; }
+  .maprow .custom { font-size: 10px; font-weight: 800; color: #1b1b1b; background: var(--accent); border-radius: 5px; padding: 1px 5px; }
+  .capture-msg { text-align: center; font-size: 17px; font-weight: 700; padding: 18px 8px; }
+  .targets { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; margin-bottom: 8px; }
+  .targets .btn { min-height: 48px; padding: 8px 10px; font-size: 13px; }
+  .targets .btn .sub { font-size: 11px; }
 </style>
 </head>
 <body>
@@ -100,6 +111,7 @@
 <nav>
   <button data-tab="party" class="on">Party</button>
   <button data-tab="battle">Battle</button>
+  <button data-tab="controls">Controls</button>
   <button data-tab="info">Info</button>
 </nav>
 <main>
@@ -107,6 +119,22 @@
   <section id="tab-battle">
     <div id="foes" class="foes"></div>
     <div id="controls"></div>
+  </section>
+  <section id="tab-controls">
+    <div id="capture" class="capture" hidden>
+      <div class="capture-msg" id="capture-msg">Press a button on your device…</div>
+      <div id="targets" class="targets"></div>
+      <button class="btn back" id="capture-cancel">Cancel</button>
+    </div>
+    <div id="remap">
+      <div class="toolbar">
+        <button class="btn" id="remap-add">Remap a button</button>
+        <button class="btn" id="remap-swap">Swap A/B</button>
+        <button class="btn" id="remap-reset">Reset all</button>
+      </div>
+      <p class="small">Tap a row to change it. Game keys follow Rejuvenation's keyboard controls (C confirm, X cancel/menu).</p>
+      <div id="remap-list"></div>
+    </div>
   </section>
   <section id="tab-info">
     <div class="toolbar">
@@ -303,6 +331,10 @@
         if (menu) showTab("battle");
         renderControls();
         break;
+      case "capture":
+        showTab("controls");
+        openTargets(msg.code, msg.name);
+        break;
       case "probe":
         $("probe").textContent = JSON.stringify(msg, null, 2);
         break;
@@ -331,6 +363,90 @@
     }
     if (document.querySelector("#tab-info.on")) refreshLog();
   }, 2000);
+
+  // ── Controls / button remapping ───────────────────────────────────────
+  var TARGETS = [
+    [31, "C", "Confirm"], [52, "X", "Cancel / Menu"], [54, "Z", "A button"], [29, "A", "X button"],
+    [47, "S", "Y button"], [32, "D", "Z button"], [45, "Q", "L button"], [51, "W", "R button"],
+    [19, "Up", ""], [20, "Down", ""], [21, "Left", ""], [22, "Right", ""],
+    [66, "Enter", ""], [111, "Esc", ""], [62, "Space", ""], [59, "Shift", ""], [113, "Ctrl", ""], [57, "Alt", ""],
+    [131, "F1", ""], [132, "F2", ""], [133, "F3", ""], [134, "F4", ""], [135, "F5", "Registered item"],
+    [136, "F6", ""], [137, "F7", ""], [138, "F8", ""], [139, "F9", ""], [140, "F10", ""], [141, "F11", ""],
+    [142, "F12", ""], [-1, "Nothing", "Disable button"]
+  ];
+  function targetLabel(code) {
+    for (var i = 0; i < TARGETS.length; i++)
+      if (TARGETS[i][0] === code) return TARGETS[i][1] + (TARGETS[i][2] ? " · " + TARGETS[i][2] : "");
+    return "Key " + code;
+  }
+  var captureCode = null;
+
+  function renderRemap() {
+    if (!native.remapList) { $("remap-list").innerHTML = '<div class="empty">Remapping needs the app build.</div>'; return; }
+    var list = [];
+    try { list = JSON.parse(native.remapList()); } catch (e) {}
+    $("remap-list").innerHTML = list.map(function (m) {
+      return '<div class="maprow" data-code="' + m.code + '" data-name="' + esc(m.name) + '">' +
+        '<span class="phys">' + esc(m.name) + '</span><span class="arrow">→</span>' +
+        '<span class="tgt">' + esc(targetLabel(m.target)) + "</span>" +
+        (m.custom ? '<span class="custom">CUSTOM</span>' : "") + "</div>";
+    }).join("");
+  }
+
+  function openTargets(code, name) {
+    captureCode = code;
+    $("capture").hidden = false;
+    $("remap").hidden = true;
+    $("capture-msg").textContent = name + " should press…";
+    $("targets").innerHTML = TARGETS.map(function (t) {
+      return '<button class="btn" data-target="' + t[0] + '">' + esc(t[1]) +
+        (t[2] ? '<span class="sub">' + esc(t[2]) + "</span>" : "") + "</button>";
+    }).join("") + '<button class="btn" data-target="default">Default<span class="sub">Built-in mapping</span></button>';
+  }
+  function closeCapture() {
+    captureCode = null;
+    $("capture").hidden = true;
+    $("remap").hidden = false;
+    $("targets").innerHTML = "";
+    try { native.remapCancel && native.remapCancel(); } catch (e) {}
+    renderRemap();
+  }
+
+  $("remap-add").addEventListener("click", function () {
+    if (!native.remapCapture) return;
+    captureCode = null;
+    $("capture").hidden = false;
+    $("remap").hidden = true;
+    $("targets").innerHTML = "";
+    $("capture-msg").textContent = "Press the button you want to remap…";
+    native.remapCapture();
+  });
+  $("remap-list").addEventListener("click", function (e) {
+    var row = e.target.closest(".maprow");
+    if (row) openTargets(Number(row.dataset.code), row.dataset.name);
+  });
+  $("targets").addEventListener("click", function (e) {
+    var b = e.target.closest("button");
+    if (!b || captureCode == null) return;
+    if (b.dataset.target === "default") native.remapClear(captureCode);
+    else native.remapSet(captureCode, Number(b.dataset.target));
+    try { native.haptic && native.haptic(12); } catch (err) {}
+    closeCapture();
+  });
+  $("capture-cancel").addEventListener("click", closeCapture);
+  $("remap-swap").addEventListener("click", function () {
+    if (!native.remapSet) return;
+    native.remapSet(96, 52);  // BUTTON_A -> X (cancel)
+    native.remapSet(97, 31);  // BUTTON_B -> C (confirm)
+    renderRemap();
+  });
+  $("remap-reset").addEventListener("click", function () {
+    if (native.remapReset) native.remapReset();
+    renderRemap();
+  });
+  tabs.forEach(function (b) {
+    b.addEventListener("click", function () { if (b.dataset.tab === "controls") renderRemap(); });
+  });
 
   window.rd = { recv: recv };
   setInterval(renderHeader, 2000);

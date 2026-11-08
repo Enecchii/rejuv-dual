@@ -30,6 +30,7 @@ import com.hatkid.mkxpz.gamepad.GamepadConfig;
 import com.hatkid.mkxpz.companion.CompanionBridge;
 import com.hatkid.mkxpz.companion.CompanionHost;
 import com.hatkid.mkxpz.companion.LogCapture;
+import com.hatkid.mkxpz.companion.KeyRemap;
 
 public class MainActivity extends SDLActivity
 {
@@ -176,6 +177,7 @@ public class MainActivity extends SDLActivity
     protected void onCreate(Bundle savedInstanceState)
     {
         LogCapture.start();
+        KeyRemap.init(getApplicationContext());
 
         super.onCreate(savedInstanceState);
 
@@ -265,6 +267,15 @@ public class MainActivity extends SDLActivity
     @Override
     public boolean dispatchKeyEvent(KeyEvent evt)
     {
+        // rejuv-dual: button remapping (and capture for the remap UI)
+        if (KeyRemap.handle(evt)) {
+            if (!mGamepadInvisible) {
+                mGamepad.hideView();
+                mGamepadInvisible = true;
+            }
+            return true;
+        }
+
         if (
             evt.getKeyCode() != KeyEvent.KEYCODE_BACK &&
             evt.getKeyCode() != KeyEvent.KEYCODE_VOLUME_UP &&

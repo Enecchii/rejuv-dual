@@ -106,6 +106,42 @@ public class CompanionWebView extends WebView implements CompanionBridge.Sink
         }
 
         @JavascriptInterface
+        public String remapList()
+        {
+            return KeyRemap.toJson();
+        }
+
+        @JavascriptInterface
+        public void remapCapture()
+        {
+            KeyRemap.startCapture();
+        }
+
+        @JavascriptInterface
+        public void remapCancel()
+        {
+            KeyRemap.cancelCapture();
+        }
+
+        @JavascriptInterface
+        public void remapSet(int code, int target)
+        {
+            KeyRemap.set(code, target);
+        }
+
+        @JavascriptInterface
+        public void remapClear(int code)
+        {
+            KeyRemap.clear(code);
+        }
+
+        @JavascriptInterface
+        public void remapReset()
+        {
+            KeyRemap.reset();
+        }
+
+        @JavascriptInterface
         public String mode()
         {
             return mMode;

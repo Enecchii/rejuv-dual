@@ -840,6 +840,20 @@ struct GraphicsPrivate {
         avgFPSLock = SDL_CreateMutex();
         glResourceLock = SDL_CreateMutex();
         
+#ifdef MKXPZ_BUILD_ANDROID
+        /* rejuv-dual: Android's surface is always full screen, but no resize
+         * event may arrive to tell us, which left the game drawn at its
+         * native size in the bottom-left corner. Start from the real size. */
+        {
+            SDL_Window *curWin = SDL_GL_GetCurrentWindow();
+            int dw = 0, dh = 0;
+            if (curWin)
+                SDL_GL_GetDrawableSize(curWin, &dw, &dh);
+            if (dw > 0 && dh > 0)
+                winSize = Vec2i(dw, dh);
+        }
+#endif
+
         if (integerScaleActive) {
             integerScaleFactor = Vec2i(0, 0);
             rebuildIntegerScaleBuffer();

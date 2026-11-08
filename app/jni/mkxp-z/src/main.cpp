@@ -295,6 +295,15 @@ int main(int argc, char *argv[])
 	Config conf;
 	conf.read(argc, argv);
 
+#ifdef MKXPZ_BUILD_ANDROID
+	// rejuv-dual: always fill the screen, keep the game's aspect ratio
+	// (black bars), and accept size changes from the Android surface,
+	// whatever the game's own mkxp.json asks for.
+	conf.fullscreen = true;
+	conf.winResizable = true;
+	conf.fixedAspectRatio = true;
+#endif
+
 #if defined(__WIN32__)
 	// Create a debug console in debug mode
 	if (conf.winConsole) {
