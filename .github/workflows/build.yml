@@ -8,6 +8,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -140,3 +143,18 @@ jobs:
           name: rejuv-dual-apk
           path: out/*.apk
           retention-days: 30
+
+      # Publish to a rolling "latest" release so the APK can be downloaded
+      # without signing in to GitHub (artifacts require a login).
+      - name: Publish rolling release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHORT=$(git rev-parse --short HEAD)
+          cp out/*.apk out/rejuv-dual.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest out/rejuv-dual.apk \
+            --title "Latest build (${SHORT})" \
+            --notes "Automatic build of ${GITHUB_SHA}. Install rejuv-dual.apk on your device." \
+            --prerelease --target "$GITHUB_SHA"
