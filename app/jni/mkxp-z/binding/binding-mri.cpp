@@ -98,6 +98,7 @@ void graphicsBindingInit();
 void fileIntBindingInit();
 
 #ifdef MKXPZ_BUILD_ANDROID
+#include <android/log.h>
 void androidBindingInit();
 std::string androidCompanionScriptPath();
 #endif
@@ -976,8 +977,17 @@ static void runRMXPScripts(BacktraceData &btData) {
     /* rejuv-dual: run the bundled companion mod after any game preloads */
     {
         std::string companionPath = androidCompanionScriptPath();
-        if (!companionPath.empty())
+        if (!companionPath.empty()) {
             runCustomScript(companionPath);
+            /* Never let the companion mod stop the game: log and clear. */
+            VALUE cexc = rb_gv_get("$!");
+            if (cexc != Qnil) {
+                VALUE desc = rb_funcall(cexc, rb_intern("inspect"), 0);
+                __android_log_print(ANDROID_LOG_ERROR, "rejuv-dual[ruby]",
+                                    "companion.rb failed to load: %s", RSTRING_PTR(desc));
+                rb_set_errinfo(Qnil);
+            }
+        }
     }
 #endif
     

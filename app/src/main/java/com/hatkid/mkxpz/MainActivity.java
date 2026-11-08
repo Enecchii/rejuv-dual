@@ -29,6 +29,7 @@ import com.hatkid.mkxpz.gamepad.Gamepad;
 import com.hatkid.mkxpz.gamepad.GamepadConfig;
 import com.hatkid.mkxpz.companion.CompanionBridge;
 import com.hatkid.mkxpz.companion.CompanionHost;
+import com.hatkid.mkxpz.companion.LogCapture;
 
 public class MainActivity extends SDLActivity
 {
@@ -52,10 +53,66 @@ public class MainActivity extends SDLActivity
     // rejuv-dual: second-screen companion UI
     private CompanionHost mCompanion;
 
+    private static boolean hasStorageAccess()
+    {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+            return Environment.isExternalStorageManager();
+        return true;
+    }
+
+    /** Mirror the log into the game folder once we may write there. */
+    private void setupLogFile()
+    {
+        File target = hasStorageAccess()
+                ? new File(GAME_PATH_DEFAULT, "rejuv-dual/log.txt")
+                : new File(getExternalFilesDir(null), "log.txt");
+        LogCapture.setFile(target);
+    }
+
+    /** Startup health report, visible on the companion's Info tab. */
+    private void logStartupReport()
+    {
+        Log.i(TAG, "rejuv-dual startup: device=" + Build.MANUFACTURER + " " + Build.MODEL
+                + " android=" + Build.VERSION.SDK_INT);
+        Log.i(TAG, "All files access: " + hasStorageAccess());
+        File game = new File(GAME_PATH);
+        Log.i(TAG, "Game path: " + GAME_PATH + " exists=" + game.isDirectory() + " readable=" + game.canRead());
+        String[] entries = game.list();
+        if (entries == null) {
+            Log.w(TAG, "Game folder is not listable (missing, or no storage access)");
+        } else {
+            java.util.Arrays.sort(entries);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < entries.length && i < 40; i++)
+                sb.append(entries[i]).append(i + 1 < entries.length ? ", " : "");
+            Log.i(TAG, "Game folder has " + entries.length + " entries: " + sb);
+            for (String want : new String[] { "Game.ini", "mkxp.json", "Data", "Graphics", "Audio" })
+                Log.i(TAG, "  " + want + ": " + (new File(game, want).exists() ? "found" : "MISSING"));
+            File scripts = new File(game, "Data/Scripts.rxdata");
+            Log.i(TAG, "  Data/Scripts.rxdata: " + (scripts.isFile() ? scripts.length() + " bytes" : "MISSING"));
+        }
+    }
+
+    private void restartApp()
+    {
+        Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        if (launch != null) {
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            int flags = android.app.PendingIntent.FLAG_CANCEL_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+                flags |= android.app.PendingIntent.FLAG_IMMUTABLE;
+            android.app.PendingIntent pi = android.app.PendingIntent.getActivity(this, 1, launch, flags);
+            android.app.AlarmManager am = (android.app.AlarmManager) getSystemService(Context.ALARM_SERVICE);
+            am.set(android.app.AlarmManager.RTC, System.currentTimeMillis() + 500, pi);
+        }
+        System.exit(0);
+    }
+
     private void runSDLThread()
     {
         if (!mStarted) {
-            Log.i(TAG, "Game path: " + GAME_PATH);
+            setupLogFile();
+            logStartupReport();
         }
 
         mStarted = true;
@@ -104,6 +161,13 @@ public class MainActivity extends SDLActivity
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
                 // Close the App because the User did not allow the all files access permission to be used.
                 mSingleton.finish();
+            } else if (mStarted) {
+                // The game already tried to start without file access and
+                // can't recover in-process (the Ruby VM can't be restarted),
+                // so relaunch the app now that access is granted.
+                Log.i(TAG, "All files access granted, restarting app");
+                android.widget.Toast.makeText(this, "File access granted, restarting…", android.widget.Toast.LENGTH_SHORT).show();
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this::restartApp, 600);
             }
         }
     }
@@ -111,6 +175,8 @@ public class MainActivity extends SDLActivity
     @Override
     protected void onCreate(Bundle savedInstanceState)
     {
+        LogCapture.start();
+
         super.onCreate(savedInstanceState);
 
         mStorageManager = (StorageManager) getSystemService(STORAGE_SERVICE);

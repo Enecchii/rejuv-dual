@@ -81,6 +81,7 @@
   .keys .btn { text-align: center; min-height: 56px; }
 
   .empty { color: var(--muted); text-align: center; padding: 30px 10px; }
+  #devlog { max-height: 60vh; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 10px; }
   pre { white-space: pre-wrap; word-break: break-word; font-size: 11px; background: var(--panel);
     border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; margin: 8px 0; user-select: text; }
   .small { font-size: 12px; color: var(--muted); }
@@ -114,6 +115,8 @@
     </div>
     <p class="small">The probe shows which game hooks were found. If something on the Party or Battle tabs is missing, screenshot this page.</p>
     <pre id="probe">No probe yet.</pre>
+    <p class="small" id="logpath">Device log</p>
+    <pre id="devlog">Loading log…</pre>
   </section>
 </main>
 
@@ -305,6 +308,29 @@
         break;
     }
   }
+
+  // ── Device log (Info tab) ─────────────────────────────────────────────
+  var bootTime = Date.now();
+  function refreshLog() {
+    if (!native.logTail) return;
+    try {
+      var path = native.logPath ? native.logPath() : "";
+      $("logpath").textContent = "Device log" + (path ? " (also saved to " + path + ")" : "");
+      var text = native.logTail(120) || "(empty)";
+      var pre = $("devlog");
+      var atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+      pre.textContent = text;
+      if (atBottom) pre.scrollTop = pre.scrollHeight;
+    } catch (e) {}
+  }
+  setInterval(function () {
+    // If the game hasn't said anything 15s after launch, surface the log.
+    if (!lastMsg && Date.now() - bootTime > 15000 && !document.querySelector("#tab-info.on")) {
+      showTab("info");
+      bootTime = Infinity;
+    }
+    if (document.querySelector("#tab-info.on")) refreshLog();
+  }, 2000);
 
   window.rd = { recv: recv };
   setInterval(renderHeader, 2000);

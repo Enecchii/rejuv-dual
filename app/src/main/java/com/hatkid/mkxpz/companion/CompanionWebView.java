@@ -93,6 +93,19 @@ public class CompanionWebView extends WebView implements CompanionBridge.Sink
         }
 
         @JavascriptInterface
+        public String logTail(int lines)
+        {
+            return LogCapture.tail(Math.max(1, Math.min(lines, 400)));
+        }
+
+        @JavascriptInterface
+        public String logPath()
+        {
+            java.io.File f = LogCapture.getFile();
+            return f == null ? "" : f.getAbsolutePath();
+        }
+
+        @JavascriptInterface
         public String mode()
         {
             return mMode;
