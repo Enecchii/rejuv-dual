@@ -28,7 +28,7 @@ unless defined?(Companion)
 end
 
 module RD
-  VERSION = "0.1.0"
+  VERSION = "0.2.3"
   RD_FILE = __FILE__
 
   STATE_INTERVAL  = 20   # frames between full state pushes outside battle
@@ -654,6 +654,8 @@ module RD
     def tick
       @frame += 1
 
+      polyfill_pathname unless @pathname_done
+
       if @frame % 30 == 1
         install_scene_hooks if @hooks[:scene].nil? || @hooks[:scene] == :none
         install_input_hooks unless @hooks[:input] == :failed
@@ -695,6 +697,136 @@ module RD
     end
   end
 end
+
+# ── Runtime polyfills ──────────────────────────────────────────────────────
+# The Android Ruby build ships Pathname's C extension but not its Ruby half
+# (lib/pathname.rb), so methods like Pathname#parent are missing. Rejuvenation
+# calls them (e.g. New Game+ save detection on load). Fill in whatever is
+# missing, using only String/File so nothing else needs to be loaded.
+module RD
+  module PathnamePolyfill
+    SEP = "/"
+
+    def self.clean(path)
+      abs = path.start_with?(SEP)
+      out = []
+      path.split(SEP).each do |part|
+        next if part.empty? || part == "."
+        if part == ".."
+          if !out.empty? && out.last != ".." then out.pop
+          elsif !abs then out << ".."
+          end
+        else
+          out << part
+        end
+      end
+      s = out.join(SEP)
+      abs ? SEP + s : (s.empty? ? "." : s)
+    end
+
+    METHODS = {
+      cleanpath: lambda { |*_| Pathname.new(RD::PathnamePolyfill.clean(to_s)) },
+      absolute?: -> { to_s.start_with?("/") },
+      relative?: -> { !to_s.start_with?("/") },
+      root?: -> { RD::PathnamePolyfill.clean(to_s) == "/" },
+      parent: -> { self + ".." },
+      :+ => lambda { |other|
+        o = other.to_s
+        return Pathname.new(RD::PathnamePolyfill.clean(o)) if o.start_with?("/")
+        Pathname.new(RD::PathnamePolyfill.clean(File.join(to_s, o)))
+      },
+      join: lambda { |*args|
+        args.reduce(self) { |acc, a| acc + a }
+      },
+      each_filename: lambda { |&blk|
+        parts = to_s.split("/").reject(&:empty?)
+        return parts.each unless blk
+        parts.each(&blk)
+        nil
+      },
+      children: lambda { |with_directory = true|
+        base = to_s
+        Dir.entries(base).reject { |e| e == "." || e == ".." }.map do |e|
+          with_directory ? Pathname.new(File.join(base, e)) : Pathname.new(e)
+        end
+      },
+      each_child: lambda { |with_directory = true, &blk|
+        kids = children(with_directory)
+        return kids.each unless blk
+        kids.each(&blk)
+      },
+      descend: lambda { |&blk|
+        parts = to_s.split("/").reject(&:empty?)
+        acc = to_s.start_with?("/") ? "/" : ""
+        list = parts.map { |p| acc = (acc.empty? || acc.end_with?("/")) ? acc + p : acc + "/" + p; Pathname.new(acc) }
+        list.unshift(Pathname.new("/")) if to_s.start_with?("/")
+        return list.each unless blk
+        list.each(&blk)
+        nil
+      },
+      ascend: lambda { |&blk|
+        list = descend.to_a.reverse
+        return list.each unless blk
+        list.each(&blk)
+        nil
+      },
+      mkpath: lambda { |*_|
+        acc = ""
+        to_s.split("/").each_with_index do |part, i|
+          acc = i.zero? ? part : acc + "/" + part
+          next if acc.empty?
+          Dir.mkdir(acc) unless File.directory?(acc)
+        end
+        self
+      },
+      relative_path_from: lambda { |base|
+        a = RD::PathnamePolyfill.clean(File.expand_path(to_s)).split("/")
+        b = RD::PathnamePolyfill.clean(File.expand_path(base.to_s)).split("/")
+        i = 0
+        i += 1 while i < a.length && i < b.length && a[i] == b[i]
+        rel = ([".."] * (b.length - i)) + a[i..-1]
+        Pathname.new(rel.empty? ? "." : rel.join("/"))
+      }
+    }.freeze
+
+    # Returns the list of methods added (empty once everything exists).
+    def self.apply
+      return nil unless Object.const_defined?(:Pathname)
+      added = []
+      METHODS.each do |name, fn|
+        next if ::Pathname.method_defined?(name)
+        ::Pathname.send(:define_method, name, &fn)
+        added << name
+      end
+      ::Pathname.send(:alias_method, :/, :+) if !::Pathname.method_defined?(:/) && ::Pathname.method_defined?(:+)
+      unless Object.private_method_defined?(:Pathname) || Object.method_defined?(:Pathname)
+        Object.send(:define_method, :Pathname) { |p| ::Pathname.new(p) }
+        Object.send(:private, :Pathname)
+      end
+      added
+    end
+  end
+
+  class << self
+    def polyfill_pathname
+      return if @pathname_done
+      added = PathnamePolyfill.apply
+      return if added.nil?            # Pathname not loaded yet; try again later
+      @pathname_done = true
+      log("Pathname polyfill added: #{added.join(', ')}") unless added.empty?
+    rescue StandardError => e
+      @pathname_done = true
+      error("polyfill_pathname", e)
+    end
+  end
+end
+
+begin
+  require "pathname"
+rescue LoadError, StandardError
+  nil
+end
+RD.polyfill_pathname
 
 # Graphics.update exists before any game script runs, so hook it right away.
 # Game scripts that alias Graphics.update later still call through to this.
