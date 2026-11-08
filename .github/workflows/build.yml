@@ -43,12 +43,14 @@ jobs:
         with:
           ruby-version: "3.1"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # The runner image ships the Android SDK; just add the NDK we need.
       - name: Install Android NDK
         run: |
-          sdkmanager --install "ndk;${ANDROID_NDK_VERSION}"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)
+          echo "Using $SDKM"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" --install "ndk;${ANDROID_NDK_VERSION}"
           NDK="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
           echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
           echo "ARCH=linux-x86_64" >> "$GITHUB_ENV"
