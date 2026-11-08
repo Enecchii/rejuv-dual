@@ -388,19 +388,25 @@ void Config::readGameINI() {
 
 #ifdef MKXPZ_BUILD_ANDROID
     /* rejuv-dual: SDL's pref path on Android is private app storage, which
-     * users can't reach and which is wiped on uninstall. Keep saves (and
-     * mkxp-z's own settings) in <game folder>/rejuv-dual/saves/ instead.
+     * users can't reach and which is wiped on uninstall. Use the game's own
+     * "Save Data" folder when it has one (Rejuvenation does, same as on PC),
+     * otherwise <game folder>/rejuv-dual/saves/.
      * The current directory is the game folder at this point. */
     {
         char cwd[1024];
         if (getcwd(cwd, sizeof(cwd))) {
-            std::string base = std::string(cwd) + "/rejuv-dual";
-            std::string saves = base + "/saves";
-            mkdir(base.c_str(), 0775);
-            mkdir(saves.c_str(), 0775);
             struct stat st;
-            if (stat(saves.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
-                customDataPath = saves + "/";
+            std::string saveData = std::string(cwd) + "/Save Data";
+            if (stat(saveData.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+                customDataPath = saveData + "/";
+            } else {
+                std::string base = std::string(cwd) + "/rejuv-dual";
+                std::string saves = base + "/saves";
+                mkdir(base.c_str(), 0775);
+                mkdir(saves.c_str(), 0775);
+                if (stat(saves.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+                    customDataPath = saves + "/";
+            }
         }
     }
 #endif

@@ -295,6 +295,11 @@ static void mriBindingInit()
 
 static void showMsg(const std::string &msg)
 {
+#ifdef MKXPZ_BUILD_ANDROID
+	/* rejuv-dual: also log message boxes (script errors) so they reach the
+	 * Info tab and rejuv-dual/log.txt */
+	__android_log_print(ANDROID_LOG_WARN, "rejuv-dual[msg]", "%s", msg.c_str());
+#endif
 	shState->eThread().showMessageBox(msg.c_str());
 }
 

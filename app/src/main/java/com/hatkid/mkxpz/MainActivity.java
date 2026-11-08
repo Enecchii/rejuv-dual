@@ -119,7 +119,10 @@ public class MainActivity extends SDLActivity
         if (!hasStorageAccess())
             return;
         File src = getFilesDir();
-        File dst = new File(GAME_PATH, "rejuv-dual/saves");
+        // Same choice as config.cpp: the game's own "Save Data" folder if it
+        // has one, otherwise rejuv-dual/saves.
+        File saveData = new File(GAME_PATH, "Save Data");
+        File dst = saveData.isDirectory() ? saveData : new File(GAME_PATH, "rejuv-dual/saves");
         if (!dst.isDirectory() && !dst.mkdirs()) {
             Log.w(TAG, "Couldn't create " + dst);
             return;
