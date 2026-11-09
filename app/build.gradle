@@ -10,8 +10,8 @@ android {
         applicationId "com.enecchii.rejuvdual"
         minSdk 23
         targetSdk 33
-        versionCode 6
-        versionName "0.2.3"
+        versionCode 7
+        versionName "0.2.4"
         archivesBaseName = "rejuv-dual-$versionName"
         ndk.debugSymbolLevel = 'FULL'
     }

@@ -302,6 +302,10 @@ int main(int argc, char *argv[])
 	conf.fullscreen = true;
 	conf.winResizable = true;
 	conf.fixedAspectRatio = true;
+	// Adreno (and some Mali) GLES drivers don't synchronize sub-image
+	// texture uploads, which scrambles large tilesets and blts from them.
+	// mkxp-z's built-in workaround for broken drivers fixes it.
+	conf.subImageFix = true;
 #endif
 
 #if defined(__WIN32__)
