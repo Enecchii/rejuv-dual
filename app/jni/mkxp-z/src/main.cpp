@@ -42,6 +42,10 @@
 #include "util/exception.h"
 #include "display/gl/gl-debug.h"
 #include "display/gl/gl-fun.h"
+#ifdef MKXPZ_BUILD_ANDROID
+#include <android/log.h>
+#include <string.h>
+#endif
 #include "filesystem/filesystem.h"
 #include "system/system.h"
 
@@ -595,6 +599,22 @@ static SDL_GLContext initGL(SDL_Window *win, Config &conf, RGSSThreadData *threa
 #ifndef MKXPZ_BUILD_XCODE
 	if (!conf.enableBlitting)
 		gl.BlitFramebuffer = 0;
+#endif
+
+#ifdef MKXPZ_BUILD_ANDROID
+	/* rejuv-dual: GPU report for the companion's Info tab / log.txt */
+	{
+		const char *ver = (const char*) gl.GetString(GL_VERSION);
+		const char *ren = (const char*) gl.GetString(GL_RENDERER);
+		const char *ext = (const char*) gl.GetString(GL_EXTENSIONS);
+		GLint maxTex = 0;
+		gl.GetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+		bool es3 = ver && strstr(ver, "OpenGL ES 3");
+		bool uintIdx = es3 || (ext && strstr(ext, "GL_OES_element_index_uint"));
+		__android_log_print(ANDROID_LOG_INFO, "rejuv-dual[gpu]",
+		    "GL_VERSION=%s RENDERER=%s MAX_TEXTURE_SIZE=%d uint_indices=%s",
+		    ver ? ver : "?", ren ? ren : "?", maxTex, uintIdx ? "yes" : "NO");
+	}
 #endif
 
 	gl.ClearColor(0, 0, 0, 1);

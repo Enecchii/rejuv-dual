@@ -29,9 +29,14 @@
 #include <assert.h>
 #include <stdint.h>
 
-typedef uint16_t index_t;
+/* rejuv-dual: 32-bit indices. With 16-bit ones, a tilemap with more than
+ * 16383 quads (large Rejuvenation maps, which also pack many interiors into
+ * one map) wrapped around and redrew earlier quads instead: invisible walls,
+ * missing upper layers, areas filled with a single tile. Needs GLES 3 or
+ * OES_element_index_uint, which every Android GPU in practice supports. */
+typedef uint32_t index_t;
 #define INDEX_T_MAX std::numeric_limits<index_t>::max()
-#define _GL_INDEX_TYPE GL_UNSIGNED_SHORT
+#define _GL_INDEX_TYPE GL_UNSIGNED_INT
 
 struct GlobalIBO
 {
