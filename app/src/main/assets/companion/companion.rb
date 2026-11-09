@@ -28,7 +28,7 @@ unless defined?(Companion)
 end
 
 module RD
-  VERSION = "0.3.0"
+  VERSION = "0.3.1"
   RD_FILE = __FILE__
 
   STATE_INTERVAL  = 20   # frames between full state pushes outside battle
@@ -483,6 +483,10 @@ module RD
         fake_key(cmd["key"].to_s.upcase)
       when "probe"
         @probe_sent = false
+      when "mapopt"
+        RD::MapOptimizer.set(cmd["key"].to_s, cmd["value"]) if defined?(RD::MapOptimizer)
+      when "mapopt_get"
+        RD::MapOptimizer.push_config if defined?(RD::MapOptimizer)
       when "refresh"
         @last_state = nil
       end
@@ -636,7 +640,7 @@ module RD
         input: { C: input_const(:C, :USE).inspect, B: input_const(:B, :BACK).inspect },
         get_mon_name: respond_to?(:getMonName, true),
         max_tex: (try { Bitmap.max_size }),
-        map_optimizer: (try { RD::MapOptimizer.stats.merge(enabled: RD::MapOptimizer.enabled?) }),
+        map_optimizer: (try { RD::MapOptimizer.stats.merge(cfg: RD::MapOptimizer.config) }),
         tilemap_kinds: %w[Tilemap CustomTilemap TilemapRenderer TilemapLoader SynchronizedTilemap]
                          .select { |c| Object.const_defined?(c) },
         data_dir: (try { System.data_directory } if defined?(System)),
@@ -684,6 +688,7 @@ module RD
         p = probe
         push(p)
         write_probe(p)
+        try { RD::MapOptimizer.push_config }
       end
 
       interval = @battle ? BATTLE_INTERVAL : STATE_INTERVAL
@@ -833,46 +838,95 @@ end
 RD.polyfill_pathname
 
 # ── Map optimizer ──────────────────────────────────────────────────────────
-# Rejuvenation's tilesets are enormous (tens of thousands of pixels tall).
-# Mobile GPUs can't hold them as one texture, and splitting them across a
-# huge tile atlas breaks rendering on Adreno. Like Kirin/JoiPlay's "Optimize
-# maps", build a small per-map tileset holding only the tiles that map uses,
-# and hand the Tilemap a remapped copy of the map data. The game's own data
-# ($game_map.data, passability, events) is never touched, and nothing is
-# written to disk. Create <game>/rejuv-dual/no-map-optimize to turn it off.
+# Rebuilds what the built-in Tilemap draws, so its fragile paths on Android
+# GPUs are never used:
+#  * compact: a small per-map tileset with only the tiles the map uses
+#    (Rejuvenation's tilesets are tens of thousands of pixels tall), and
+#  * autotiles: autotiles (roads, grass, walls, water) pre-rendered into
+#    ordinary tiles in that tileset, animated by redrawing their frames.
+# The Tilemap gets a remapped copy of the map data; the game's own data
+# ($game_map.data, passability, events) is untouched and nothing is written
+# to the game's files. Settings live in <game>/rejuv-dual/mapopt.txt and can
+# be toggled from the companion's Info tab.
 module RD
   module MapOptimizer
-    THRESHOLD = 2048        # compact tilesets taller than this (px)
-    CACHE_MAX = 4           # compacted tilesets kept around
+    THRESHOLD = 2048        # compact tilesets taller than this even if nothing else is on
+    CACHE_MAX = 4
     TILE = 32
-    FIRST_TILE_ID = 384     # ids below this are blank/autotiles
+    HALF = 16
+    FIRST_TILE_ID = 384     # ids below this are blank (0..47) or autotiles (48..383)
+    CFG_FILE = "rejuv-dual/mapopt.txt"
+    DEFAULTS = { "enabled" => true, "autotiles" => true, "ground" => false }.freeze
 
-    @cache = []             # most recent first: {key:, src:, bitmap:, remap:, count:}
-    @in_use = {}            # tilemap object_id => compact bitmap
-    @stats = { maps: 0, tiles: 0, last: nil, disabled: nil, errors: 0 }
+    # RPG Maker XP autotile shapes: for each of the 48 shapes, the four 16x16
+    # quarters (TL, TR, BL, BR) as 1-based cells of a 96x128 autotile frame
+    # (6 cells per row).
+    SHAPES = [
+      [27, 28, 33, 34], [ 5, 28, 33, 34], [27,  6, 33, 34], [ 5,  6, 33, 34],
+      [27, 28, 33, 12], [ 5, 28, 33, 12], [27,  6, 33, 12], [ 5,  6, 33, 12],
+      [27, 28, 11, 34], [ 5, 28, 11, 34], [27,  6, 11, 34], [ 5,  6, 11, 34],
+      [27, 28, 11, 12], [ 5, 28, 11, 12], [27,  6, 11, 12], [ 5,  6, 11, 12],
+      [25, 26, 31, 32], [25,  6, 31, 32], [25, 26, 31, 12], [25,  6, 31, 12],
+      [15, 16, 21, 22], [15, 16, 21, 12], [15, 16, 11, 22], [15, 16, 11, 12],
+      [29, 30, 35, 36], [29, 30, 11, 36], [ 5, 30, 35, 36], [ 5, 30, 11, 36],
+      [39, 40, 45, 46], [ 5, 40, 45, 46], [39,  6, 45, 46], [ 5,  6, 45, 46],
+      [25, 30, 31, 36], [15, 16, 45, 46], [13, 14, 19, 20], [13, 14, 19, 12],
+      [17, 18, 23, 24], [17, 18, 11, 24], [41, 42, 47, 48], [ 5, 42, 47, 48],
+      [37, 38, 43, 44], [37,  6, 43, 44], [13, 18, 19, 24], [13, 14, 43, 44],
+      [37, 42, 43, 48], [17, 18, 47, 48], [13, 18, 43, 48], [ 1,  2,  7,  8]
+    ].freeze
+    QUARTER_OFFSETS = [[0, 0], [HALF, 0], [0, HALF], [HALF, HALF]].freeze
+
+    @cache = []
+    @in_use = {}
+    @gen = 0
+    @stats = { maps: 0, tiles: 0, autotiles: 0, animated: 0, last: nil, errors: 0, autotile_sizes: nil }
 
     class << self
-      attr_reader :stats
+      attr_reader :stats, :gen
+
+      def config
+        return @config if @config
+        @config = DEFAULTS.dup
+        if File.exist?(CFG_FILE)
+          File.read(CFG_FILE).each_line do |l|
+            k, v = l.strip.split("=", 2)
+            @config[k] = (v == "true") if k && DEFAULTS.key?(k)
+          end
+        end
+        @config["enabled"] = false if File.exist?("rejuv-dual/no-map-optimize")
+        @config
+      rescue StandardError
+        @config = DEFAULTS.dup
+      end
+
+      def set(key, value)
+        return unless DEFAULTS.key?(key)
+        config[key] = !!value
+        begin
+          Dir.mkdir("rejuv-dual") unless File.directory?("rejuv-dual")
+          File.open(CFG_FILE, "wb") { |f| config.each { |k, v| f.write("#{k}=#{v}\n") } }
+        rescue StandardError => e
+          RD.error("mapopt_save", e)
+        end
+        @gen += 1   # live tilemaps rebuild on their next update
+        RD.log("map optimizer: #{key}=#{value}")
+        push_config
+      end
+
+      def push_config
+        RD.push(t: "mapopt", cfg: config, stats: @stats)
+      end
 
       def enabled?
-        return @enabled unless @enabled.nil?
-        @enabled = !File.exist?("rejuv-dual/no-map-optimize")
-        @stats[:disabled] = !@enabled
-        @enabled
-      rescue StandardError
-        @enabled = true
+        config["enabled"]
       end
 
-      def wants?(tileset)
-        enabled? && tileset && !tileset.disposed? && tileset.height > THRESHOLD
+      def active_for?(tileset)
+        return false unless config["enabled"] && tileset && !tileset.disposed?
+        config["autotiles"] || config["ground"] || tileset.height > THRESHOLD
       rescue StandardError
         false
-      end
-
-      # Table -> [20-byte header, Array of int16]
-      def unpack_table(t)
-        raw = t._dump(-1)
-        [raw[0, 20], raw[20..-1].unpack("s*")]
       end
 
       def lookup(key)
@@ -883,64 +937,143 @@ module RD
         e
       end
 
+      def bitmap_in_use?(bmp)
+        @in_use.values.any? { |b| b.equal?(bmp) }
+      end
+
       def store(entry)
         @cache.unshift(entry)
         while @cache.length > CACHE_MAX
           old = @cache.pop
-          in_use = @in_use.values.any? { |b| b.equal?(old[:bitmap]) }
-          old[:bitmap].dispose if !in_use && !old[:bitmap].disposed?
+          old[:bitmap].dispose if !bitmap_in_use?(old[:bitmap]) && !old[:bitmap].disposed?
         end
-        # Drop entries whose source tileset was disposed (map changed).
         @cache.reject! do |e|
           next false unless e[:src].disposed?
-          in_use = @in_use.values.any? { |b| b.equal?(e[:bitmap]) }
-          e[:bitmap].dispose if !in_use && !e[:bitmap].disposed?
+          e[:bitmap].dispose if !bitmap_in_use?(e[:bitmap]) && !e[:bitmap].disposed?
           true
         end
       end
 
-      # Returns [compact_bitmap, remap] for the tiles used in `data`.
-      def compact_tileset(tileset, data)
+      def usable_autotile?(bmp)
+        bmp && !bmp.disposed? && bmp.width >= TILE && bmp.height >= TILE
+      rescue StandardError
+        false
+      end
+
+      def autotile_frames(bmp)
+        return 1 unless usable_autotile?(bmp)
+        if bmp.height < 128
+          [bmp.width / TILE, 1].max      # "small" autotile: one tile per frame
+        else
+          [bmp.width / 96, 1].max
+        end
+      end
+
+      def clear_slot(bmp, dx, dy)
+        @clear ||= Color.new(0, 0, 0, 0)
+        bmp.fill_rect(dx, dy, TILE, TILE, @clear)
+      end
+
+      # Draw autotile `shape` (0..47), animation `frame`, at dx,dy.
+      def draw_autotile(bmp, dx, dy, src, shape, frame)
+        return unless usable_autotile?(src)
+        @rect ||= Rect.new(0, 0, 0, 0)
+        if src.height < 128
+          @rect.set(frame * TILE, 0, TILE, TILE)
+          bmp.blt(dx, dy, src, @rect)
+          return
+        end
+        fx = frame * 96
+        quarters = SHAPES[shape] || SHAPES[0]
+        quarters.each_with_index do |cell, q|
+          c = cell - 1
+          @rect.set(fx + (c % 6) * HALF, (c / 6) * HALF, HALF, HALF)
+          ox, oy = QUARTER_OFFSETS[q]
+          bmp.blt(dx + ox, dy + oy, src, @rect)
+        end
+      end
+
+      def slot_xy(i)
+        [(i % 8) * TILE, (i / 8) * TILE]
+      end
+
+      # Build (or reuse) the compact tileset for this map.
+      def compact(tileset, data, autotiles)
+        flatten = config["autotiles"]
         used = {}
-        data.each { |id| used[id] = true if id >= FIRST_TILE_ID }
-        ids = used.keys.sort
-        key = [tileset.object_id, ids.hash]
+        data.each { |id| used[id] = true if id >= 48 && (flatten || id >= FIRST_TILE_ID) }
+        at_ids = used.keys.select { |id| id < FIRST_TILE_ID }.sort
+        ts_ids = used.keys.select { |id| id >= FIRST_TILE_ID }.sort
+        key = [tileset.object_id, flatten, autotiles.map(&:object_id), at_ids.hash, ts_ids.hash]
         if (e = lookup(key))
           return e
         end
 
-        cols = 8
-        rows = [(ids.length + cols - 1) / cols, 1].max
-        bmp = Bitmap.new(cols * TILE, rows * TILE)
+        n = at_ids.length + ts_ids.length
+        bmp = Bitmap.new(8 * TILE, [(n + 7) / 8, 1].max * TILE)
         remap = {}
-        src_rows = tileset.height / TILE
+        anims = []
+        slot = 0
         rect = Rect.new(0, 0, TILE, TILE)
-        ids.each_with_index do |id, i|
-          idx = id - FIRST_TILE_ID
-          sx = (idx % cols) * TILE
-          sy = (idx / cols) * TILE
-          remap[id] = FIRST_TILE_ID + i
-          next if idx / cols >= src_rows
-          rect.set(sx, sy, TILE, TILE)
-          bmp.blt((i % cols) * TILE, (i / cols) * TILE, tileset, rect)
+
+        at_ids.each do |id|
+          at = id / 48 - 1
+          shape = id % 48
+          src = autotiles[at]
+          dx, dy = slot_xy(slot)
+          draw_autotile(bmp, dx, dy, src, shape, 0)
+          frames = autotile_frames(src)
+          anims << { dx: dx, dy: dy, src: src, shape: shape, frames: frames } if frames > 1
+          remap[id] = FIRST_TILE_ID + slot
+          slot += 1
         end
-        e = { key: key, src: tileset, bitmap: bmp, remap: remap, count: ids.length }
+
+        src_rows = tileset.height / TILE
+        ts_ids.each do |id|
+          idx = id - FIRST_TILE_ID
+          dx, dy = slot_xy(slot)
+          remap[id] = FIRST_TILE_ID + slot
+          slot += 1
+          next if idx / 8 >= src_rows
+          rect.set((idx % 8) * TILE, (idx / 8) * TILE, TILE, TILE)
+          bmp.blt(dx, dy, tileset, rect)
+        end
+
+        e = { key: key, src: tileset, bitmap: bmp, remap: remap, count: n, anims: anims, frame: 0 }
         store(e)
         @stats[:maps] += 1
-        @stats[:tiles] = ids.length
-        @stats[:last] = "#{tileset.width}x#{tileset.height} -> #{bmp.width}x#{bmp.height} (#{ids.length} tiles)"
+        @stats[:tiles] = ts_ids.length
+        @stats[:autotiles] = at_ids.length
+        @stats[:animated] = anims.length
+        @stats[:autotile_sizes] = autotiles.map { |b| usable_autotile?(b) ? "#{b.width}x#{b.height}" : nil }
+        @stats[:last] = "#{tileset.width}x#{tileset.height} -> #{bmp.width}x#{bmp.height} " \
+                        "(#{ts_ids.length} tiles, #{at_ids.length} autotile shapes, #{anims.length} animated)"
         RD.log("map optimizer: #{@stats[:last]}")
         e
       end
 
+      # Advance autotile animation (RMXP: one frame every 16 game frames).
+      def animate(entry)
+        return if entry.nil? || entry[:anims].empty? || entry[:bitmap].disposed?
+        frame = Graphics.frame_count / 16
+        return if frame == entry[:frame]
+        entry[:frame] = frame
+        bmp = entry[:bitmap]
+        entry[:anims].each do |a|
+          clear_slot(bmp, a[:dx], a[:dy])
+          draw_autotile(bmp, a[:dx], a[:dy], a[:src], a[:shape], frame % a[:frames])
+        end
+      end
+
       def remap_table(header, data, remap)
-        out = data.map { |id| id >= FIRST_TILE_ID ? (remap[id] || 0) : id }
+        out = data.map { |id| remap[id] || (id >= 48 ? (id < FIRST_TILE_ID ? id : 0) : id) }
         Table._load(header + out.pack("s*"))
       end
 
       def remap_priorities(prio, remap, count)
-        return nil if prio.nil?
         t = Table.new(FIRST_TILE_ID + count)
+        return t if config["ground"]          # diagnostic: everything on the ground layer
+        return t if prio.nil?
         n = [prio.xsize, FIRST_TILE_ID].min
         n.times { |i| t[i] = prio[i] }
         remap.each { |old, new| t[new] = old < prio.xsize ? prio[old] : 0 }
@@ -990,8 +1123,6 @@ if defined?(Tilemap) && !Tilemap.method_defined?(:rd_orig_set_tileset)
       v
     end
 
-    # Getters return what the game set, so its own code (and disposal of
-    # the real tileset) behaves exactly as before.
     def tileset
       defined?(@rd_tileset) ? @rd_tileset : rd_orig_get_tileset
     end
@@ -1005,21 +1136,25 @@ if defined?(Tilemap) && !Tilemap.method_defined?(:rd_orig_set_tileset)
     end
 
     def update(*args)
-      if @rd_optimized
-        @rd_check = (@rd_check || 0) + 1
-        if @rd_check >= 30
-          @rd_check = 0
-          # Tiles changed at runtime (puzzles, events): rebuild.
-          begin
-            dump = @rd_map_data._dump(-1)
-            if dump != @rd_map_dump
+      begin
+        if @rd_gen != RD::MapOptimizer.gen
+          @rd_gen = RD::MapOptimizer.gen
+          @rd_map_dump = nil
+          rd_refresh
+        elsif @rd_optimized
+          RD::MapOptimizer.animate(@rd_entry)
+          @rd_check = (@rd_check || 0) + 1
+          if @rd_check >= 30
+            @rd_check = 0
+            # Map tiles or autotile bitmaps changed at runtime: rebuild.
+            if @rd_map_data._dump(-1) != @rd_map_dump || rd_autotile_ids != @rd_at_ids
               @rd_map_dump = nil
               rd_refresh
             end
-          rescue StandardError => e
-            RD::MapOptimizer.error(e)
           end
         end
+      rescue StandardError => e
+        RD::MapOptimizer.error(e)
       end
       rd_orig_update(*args)
     end
@@ -1033,6 +1168,17 @@ if defined?(Tilemap) && !Tilemap.method_defined?(:rd_orig_set_tileset)
 
     private
 
+    def rd_autotile_bitmaps
+      ats = respond_to?(:autotiles) ? autotiles : nil
+      (0...7).map { |i| ats ? (ats[i] rescue nil) : nil }
+    rescue StandardError
+      Array.new(7)
+    end
+
+    def rd_autotile_ids
+      rd_autotile_bitmaps.map(&:object_id)
+    end
+
     def rd_apply(which, obj)
       @rd_applied ||= {}
       return if @rd_applied.key?(which) && @rd_applied[which].equal?(obj)
@@ -1045,34 +1191,37 @@ if defined?(Tilemap) && !Tilemap.method_defined?(:rd_orig_set_tileset)
     end
 
     def rd_refresh
+      @rd_gen = RD::MapOptimizer.gen
       ts = @rd_tileset
       md = @rd_map_data
-      if RD::MapOptimizer.wants?(ts)
-        # Hold back the huge tileset until we know which tiles are used.
-        return if md.nil?
+      if RD::MapOptimizer.active_for?(ts)
+        return if md.nil?   # hold back until we know which tiles are used
         begin
           dump = md._dump(-1)
-          if @rd_map_dump != dump || !@rd_entry || !@rd_entry[:src].equal?(ts) || @rd_entry[:bitmap].disposed?
+          ats = rd_autotile_bitmaps
+          if @rd_map_dump != dump || @rd_entry.nil? || !@rd_entry[:src].equal?(ts) ||
+             @rd_entry[:bitmap].disposed? || ats.map(&:object_id) != @rd_at_ids
             header = dump[0, 20]
             data = dump[20..-1].unpack("s*")
-            @rd_entry = RD::MapOptimizer.compact_tileset(ts, data)
+            @rd_entry = RD::MapOptimizer.compact(ts, data, ats)
             @rd_remapped = RD::MapOptimizer.remap_table(header, data, @rd_entry[:remap])
             @rd_map_dump = dump
+            @rd_at_ids = ats.map(&:object_id)
             @rd_prio_src = :none
           end
-          unless @rd_prio_src.equal?(@rd_priorities)
+          unless @rd_prio_src.equal?(@rd_priorities) && @rd_prio_gen == RD::MapOptimizer.gen
             @rd_prio_src = @rd_priorities
+            @rd_prio_gen = RD::MapOptimizer.gen
             @rd_prio_remapped = RD::MapOptimizer.remap_priorities(@rd_priorities, @rd_entry[:remap], @rd_entry[:count])
           end
           rd_apply(:tileset, @rd_entry[:bitmap])
           rd_apply(:map_data, @rd_remapped)
-          rd_apply(:priorities, @rd_prio_remapped) if @rd_prio_remapped
+          rd_apply(:priorities, @rd_prio_remapped)
           RD::MapOptimizer.mark_in_use(self, @rd_entry[:bitmap])
           @rd_optimized = true
           return
         rescue StandardError => e
           RD::MapOptimizer.error(e)
-          # fall through to the unoptimized path
         end
       end
       @rd_optimized = false

@@ -89,6 +89,14 @@
   .toolbar .btn { min-height: 40px; padding: 8px 12px; text-align: center; flex: 1; }
 
   body.panel header { padding-right: 56px; }
+  .sect { margin: 4px 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .toggles { display: grid; gap: 6px; }
+  .tog { display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text);
+    font: inherit; padding: 12px; }
+  .tog .state { font-size: 12px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: #39414f; color: var(--muted); }
+  .tog.on .state { background: var(--hp-good); color: #0d1f12; }
+  .tog:active { filter: brightness(1.2); }
   nav button { font-size: 14px; }
   .maprow { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line);
     border-radius: var(--radius); padding: 10px 12px; margin-top: 6px; }
@@ -137,6 +145,13 @@
     </div>
   </section>
   <section id="tab-info">
+    <h3 class="sect">Map rendering</h3>
+    <div class="toggles" id="mapopt">
+      <button class="tog" data-key="enabled"><b>Map optimizer</b><span class="state">…</span></button>
+      <button class="tog" data-key="autotiles"><b>Pre-render autotiles</b><span class="state">…</span></button>
+      <button class="tog" data-key="ground"><b>Test: all tiles on ground layer</b><span class="state">…</span></button>
+    </div>
+    <p class="small" id="mapopt-stats">Changes apply instantly to the current map.</p>
     <div class="toolbar">
       <button class="btn" id="reprobe">Re-run probe</button>
       <button class="btn" id="refresh">Resend state</button>
@@ -335,6 +350,10 @@
         showTab("controls");
         openTargets(msg.code, msg.name);
         break;
+      case "mapopt":
+        mapopt = msg.cfg || {};
+        renderMapopt(msg.stats);
+        break;
       case "probe":
         $("probe").textContent = JSON.stringify(msg, null, 2);
         break;
@@ -446,6 +465,25 @@
   });
   tabs.forEach(function (b) {
     b.addEventListener("click", function () { if (b.dataset.tab === "controls") renderRemap(); });
+  });
+
+  // ── Map rendering toggles ─────────────────────────────────────────────
+  var mapopt = null;
+  function renderMapopt(stats) {
+    document.querySelectorAll("#mapopt .tog").forEach(function (b) {
+      var on = mapopt && mapopt[b.dataset.key];
+      b.classList.toggle("on", !!on);
+      b.querySelector(".state").textContent = mapopt ? (on ? "ON" : "OFF") : "…";
+    });
+    if (stats && stats.last) $("mapopt-stats").textContent = "Last map: " + stats.last + (stats.errors ? " · " + stats.errors + " error(s)" : "");
+  }
+  $("mapopt").addEventListener("click", function (e) {
+    var b = e.target.closest(".tog");
+    if (!b || !mapopt) return;
+    send({ t: "mapopt", key: b.dataset.key, value: !mapopt[b.dataset.key] });
+  });
+  tabs.forEach(function (b) {
+    b.addEventListener("click", function () { if (b.dataset.tab === "info") send({ t: "mapopt_get" }); });
   });
 
   window.rd = { recv: recv };
