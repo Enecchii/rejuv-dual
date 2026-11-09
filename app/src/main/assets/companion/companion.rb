@@ -28,7 +28,7 @@ unless defined?(Companion)
 end
 
 module RD
-  VERSION = "0.2.3"
+  VERSION = "0.3.0"
   RD_FILE = __FILE__
 
   STATE_INTERVAL  = 20   # frames between full state pushes outside battle
@@ -635,6 +635,10 @@ module RD
         species_sample: first ? (try { call_if(first, :species).inspect }) : nil,
         input: { C: input_const(:C, :USE).inspect, B: input_const(:B, :BACK).inspect },
         get_mon_name: respond_to?(:getMonName, true),
+        max_tex: (try { Bitmap.max_size }),
+        map_optimizer: (try { RD::MapOptimizer.stats.merge(enabled: RD::MapOptimizer.enabled?) }),
+        tilemap_kinds: %w[Tilemap CustomTilemap TilemapRenderer TilemapLoader SynchronizedTilemap]
+                         .select { |c| Object.const_defined?(c) },
         data_dir: (try { System.data_directory } if defined?(System)),
         data_files: (try { Dir.entries(System.data_directory).reject { |f| f.start_with?(".") }.first(20) } if defined?(System)),
         game_saves: try { Dir.glob("*.rxdata").first(20) },
@@ -827,6 +831,259 @@ rescue LoadError, StandardError
   nil
 end
 RD.polyfill_pathname
+
+# ── Map optimizer ──────────────────────────────────────────────────────────
+# Rejuvenation's tilesets are enormous (tens of thousands of pixels tall).
+# Mobile GPUs can't hold them as one texture, and splitting them across a
+# huge tile atlas breaks rendering on Adreno. Like Kirin/JoiPlay's "Optimize
+# maps", build a small per-map tileset holding only the tiles that map uses,
+# and hand the Tilemap a remapped copy of the map data. The game's own data
+# ($game_map.data, passability, events) is never touched, and nothing is
+# written to disk. Create <game>/rejuv-dual/no-map-optimize to turn it off.
+module RD
+  module MapOptimizer
+    THRESHOLD = 2048        # compact tilesets taller than this (px)
+    CACHE_MAX = 4           # compacted tilesets kept around
+    TILE = 32
+    FIRST_TILE_ID = 384     # ids below this are blank/autotiles
+
+    @cache = []             # most recent first: {key:, src:, bitmap:, remap:, count:}
+    @in_use = {}            # tilemap object_id => compact bitmap
+    @stats = { maps: 0, tiles: 0, last: nil, disabled: nil, errors: 0 }
+
+    class << self
+      attr_reader :stats
+
+      def enabled?
+        return @enabled unless @enabled.nil?
+        @enabled = !File.exist?("rejuv-dual/no-map-optimize")
+        @stats[:disabled] = !@enabled
+        @enabled
+      rescue StandardError
+        @enabled = true
+      end
+
+      def wants?(tileset)
+        enabled? && tileset && !tileset.disposed? && tileset.height > THRESHOLD
+      rescue StandardError
+        false
+      end
+
+      # Table -> [20-byte header, Array of int16]
+      def unpack_table(t)
+        raw = t._dump(-1)
+        [raw[0, 20], raw[20..-1].unpack("s*")]
+      end
+
+      def lookup(key)
+        i = @cache.index { |e| e[:key] == key && !e[:src].disposed? && !e[:bitmap].disposed? }
+        return nil unless i
+        e = @cache.delete_at(i)
+        @cache.unshift(e)
+        e
+      end
+
+      def store(entry)
+        @cache.unshift(entry)
+        while @cache.length > CACHE_MAX
+          old = @cache.pop
+          in_use = @in_use.values.any? { |b| b.equal?(old[:bitmap]) }
+          old[:bitmap].dispose if !in_use && !old[:bitmap].disposed?
+        end
+        # Drop entries whose source tileset was disposed (map changed).
+        @cache.reject! do |e|
+          next false unless e[:src].disposed?
+          in_use = @in_use.values.any? { |b| b.equal?(e[:bitmap]) }
+          e[:bitmap].dispose if !in_use && !e[:bitmap].disposed?
+          true
+        end
+      end
+
+      # Returns [compact_bitmap, remap] for the tiles used in `data`.
+      def compact_tileset(tileset, data)
+        used = {}
+        data.each { |id| used[id] = true if id >= FIRST_TILE_ID }
+        ids = used.keys.sort
+        key = [tileset.object_id, ids.hash]
+        if (e = lookup(key))
+          return e
+        end
+
+        cols = 8
+        rows = [(ids.length + cols - 1) / cols, 1].max
+        bmp = Bitmap.new(cols * TILE, rows * TILE)
+        remap = {}
+        src_rows = tileset.height / TILE
+        rect = Rect.new(0, 0, TILE, TILE)
+        ids.each_with_index do |id, i|
+          idx = id - FIRST_TILE_ID
+          sx = (idx % cols) * TILE
+          sy = (idx / cols) * TILE
+          remap[id] = FIRST_TILE_ID + i
+          next if idx / cols >= src_rows
+          rect.set(sx, sy, TILE, TILE)
+          bmp.blt((i % cols) * TILE, (i / cols) * TILE, tileset, rect)
+        end
+        e = { key: key, src: tileset, bitmap: bmp, remap: remap, count: ids.length }
+        store(e)
+        @stats[:maps] += 1
+        @stats[:tiles] = ids.length
+        @stats[:last] = "#{tileset.width}x#{tileset.height} -> #{bmp.width}x#{bmp.height} (#{ids.length} tiles)"
+        RD.log("map optimizer: #{@stats[:last]}")
+        e
+      end
+
+      def remap_table(header, data, remap)
+        out = data.map { |id| id >= FIRST_TILE_ID ? (remap[id] || 0) : id }
+        Table._load(header + out.pack("s*"))
+      end
+
+      def remap_priorities(prio, remap, count)
+        return nil if prio.nil?
+        t = Table.new(FIRST_TILE_ID + count)
+        n = [prio.xsize, FIRST_TILE_ID].min
+        n.times { |i| t[i] = prio[i] }
+        remap.each { |old, new| t[new] = old < prio.xsize ? prio[old] : 0 }
+        t
+      end
+
+      def mark_in_use(tilemap, bitmap)
+        if bitmap then @in_use[tilemap.object_id] = bitmap
+        else @in_use.delete(tilemap.object_id)
+        end
+      end
+
+      def error(e)
+        @stats[:errors] += 1
+        RD.error("map_optimizer", e)
+      end
+    end
+  end
+end
+
+if defined?(Tilemap) && !Tilemap.method_defined?(:rd_orig_set_tileset)
+  class Tilemap
+    alias_method :rd_orig_set_tileset, :tileset=
+    alias_method :rd_orig_get_tileset, :tileset
+    alias_method :rd_orig_set_map_data, :map_data=
+    alias_method :rd_orig_get_map_data, :map_data
+    alias_method :rd_orig_set_priorities, :priorities=
+    alias_method :rd_orig_get_priorities, :priorities
+    alias_method :rd_orig_update, :update
+    alias_method :rd_orig_dispose, :dispose if method_defined?(:dispose)
+
+    def tileset=(v)
+      @rd_tileset = v
+      rd_refresh
+      v
+    end
+
+    def map_data=(v)
+      @rd_map_data = v
+      rd_refresh
+      v
+    end
+
+    def priorities=(v)
+      @rd_priorities = v
+      rd_refresh
+      v
+    end
+
+    # Getters return what the game set, so its own code (and disposal of
+    # the real tileset) behaves exactly as before.
+    def tileset
+      defined?(@rd_tileset) ? @rd_tileset : rd_orig_get_tileset
+    end
+
+    def map_data
+      defined?(@rd_map_data) ? @rd_map_data : rd_orig_get_map_data
+    end
+
+    def priorities
+      defined?(@rd_priorities) ? @rd_priorities : rd_orig_get_priorities
+    end
+
+    def update(*args)
+      if @rd_optimized
+        @rd_check = (@rd_check || 0) + 1
+        if @rd_check >= 30
+          @rd_check = 0
+          # Tiles changed at runtime (puzzles, events): rebuild.
+          begin
+            dump = @rd_map_data._dump(-1)
+            if dump != @rd_map_dump
+              @rd_map_dump = nil
+              rd_refresh
+            end
+          rescue StandardError => e
+            RD::MapOptimizer.error(e)
+          end
+        end
+      end
+      rd_orig_update(*args)
+    end
+
+    if method_defined?(:rd_orig_dispose)
+      def dispose(*args)
+        RD::MapOptimizer.mark_in_use(self, nil)
+        rd_orig_dispose(*args)
+      end
+    end
+
+    private
+
+    def rd_apply(which, obj)
+      @rd_applied ||= {}
+      return if @rd_applied.key?(which) && @rd_applied[which].equal?(obj)
+      @rd_applied[which] = obj
+      case which
+      when :tileset then rd_orig_set_tileset(obj)
+      when :map_data then rd_orig_set_map_data(obj)
+      when :priorities then rd_orig_set_priorities(obj)
+      end
+    end
+
+    def rd_refresh
+      ts = @rd_tileset
+      md = @rd_map_data
+      if RD::MapOptimizer.wants?(ts)
+        # Hold back the huge tileset until we know which tiles are used.
+        return if md.nil?
+        begin
+          dump = md._dump(-1)
+          if @rd_map_dump != dump || !@rd_entry || !@rd_entry[:src].equal?(ts) || @rd_entry[:bitmap].disposed?
+            header = dump[0, 20]
+            data = dump[20..-1].unpack("s*")
+            @rd_entry = RD::MapOptimizer.compact_tileset(ts, data)
+            @rd_remapped = RD::MapOptimizer.remap_table(header, data, @rd_entry[:remap])
+            @rd_map_dump = dump
+            @rd_prio_src = :none
+          end
+          unless @rd_prio_src.equal?(@rd_priorities)
+            @rd_prio_src = @rd_priorities
+            @rd_prio_remapped = RD::MapOptimizer.remap_priorities(@rd_priorities, @rd_entry[:remap], @rd_entry[:count])
+          end
+          rd_apply(:tileset, @rd_entry[:bitmap])
+          rd_apply(:map_data, @rd_remapped)
+          rd_apply(:priorities, @rd_prio_remapped) if @rd_prio_remapped
+          RD::MapOptimizer.mark_in_use(self, @rd_entry[:bitmap])
+          @rd_optimized = true
+          return
+        rescue StandardError => e
+          RD::MapOptimizer.error(e)
+          # fall through to the unoptimized path
+        end
+      end
+      @rd_optimized = false
+      @rd_entry = nil
+      RD::MapOptimizer.mark_in_use(self, nil)
+      rd_apply(:tileset, ts) if ts
+      rd_apply(:map_data, md) if md
+      rd_apply(:priorities, @rd_priorities) if @rd_priorities
+    end
+  end
+end
 
 # Graphics.update exists before any game script runs, so hook it right away.
 # Game scripts that alias Graphics.update later still call through to this.
