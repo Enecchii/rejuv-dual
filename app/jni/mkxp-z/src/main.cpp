@@ -306,6 +306,10 @@ int main(int argc, char *argv[])
 	// texture uploads, which scrambles large tilesets and blts from them.
 	// mkxp-z's built-in workaround for broken drivers fixes it.
 	conf.subImageFix = true;
+	// glBlitFramebuffer is unreliable on Adreno: autotiles (roads, grass)
+	// blitted into the tile atlas came out as flat colors. Use the shader
+	// copy path instead, as mkxp-z already does on Windows.
+	conf.enableBlitting = false;
 #endif
 
 #if defined(__WIN32__)
